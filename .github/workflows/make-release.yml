@@ -69,8 +69,8 @@ jobs:
       - name: Run tests (release gate)
         run: |
           uv sync --locked
-          uv run python -m py_compile scripts/boss_cdp_raw.py scripts/job_summary.py
-          uv run python -m unittest tests.test_chrome_setup tests.test_job_summary
+          uv run python -m py_compile scripts/boss_cdp_raw.py scripts/job_summary.py scripts/deepseek_screen.py
+          uv run python -m unittest tests.test_chrome_setup tests.test_job_summary tests.test_deepseek_screen
 
       - name: Push release branch
         env:

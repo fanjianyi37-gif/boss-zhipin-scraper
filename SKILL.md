@@ -26,6 +26,7 @@ metadata:
 
 - `scripts/boss_cdp_raw.py`：抓取主脚本
 - `scripts/job_summary.py`：抓取后摘要和提示词脚本
+- `scripts/deepseek_screen.py`：可选 DeepSeek 文本筛选。默认不要运行；只有用户明确要求时才加 `--deepseek` 和偏好原文
 
 **运行任何命令前，必须先确定脚本的绝对路径。**
 
@@ -153,6 +154,17 @@ python3 "$SUMMARY_PATH" \
   --details ~/.boss-zhipin-scraper/job-result/boss_details_20260625_1200.json \
   --top 15
 ```
+
+抓取和默认摘要都没有模型分类。不要自行打开 DeepSeek。只有用户明确给出筛选偏好时才运行，并且不要把结果发出去，不要写 sent 标记，不要启动浏览器：
+
+```bash
+python3 "$SUMMARY_PATH" \
+  --input ~/.boss-zhipin-scraper/job-result/boss_jobs_20260625_1200.json \
+  --deepseek \
+  --preferences "用户原文中的筛选偏好"
+```
+
+没有偏好就不要编造城市或方向。接口失败时命令仍打印原来的摘要。`scripts/deepseek_screen.py` 必须和 `job_summary.py` 放在同一目录，否则筛选会跳过并保留摘要。
 
 ## 参数速查
 
@@ -285,6 +297,8 @@ curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/maste
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/deepseek_screen.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/deepseek_screen.py && \
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/data/city_codes.json \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
@@ -298,6 +312,7 @@ mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
 cp boss-zhipin-scraper/SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
 cp boss-zhipin-scraper/scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp boss-zhipin-scraper/scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+cp boss-zhipin-scraper/scripts/deepseek_screen.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data
 cp boss-zhipin-scraper/data/city_codes.json ~/.hermes/skills/data-science/boss-zhipin-scraper/data/
 ```
