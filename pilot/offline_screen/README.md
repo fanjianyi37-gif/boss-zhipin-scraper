@@ -23,6 +23,8 @@
 
 官方文档写明，省略 `thinking` 时 deepseek-flash 默认开启思考，默认努力为 high。思考和最终答案共用 `max_tokens`。2026-11-10 的 5 条真实请求 `finish_reason=length`，`completion_tokens` 正好是当时的 1400。这次请求显式发送 `thinking.type=disabled`。`reason` 最多 40 个字符。5 条的 `max_tokens` 是 528，20 条封顶 1024。这不是把 1400 调大。截断时报告保留最多 400 字的脱敏 content 摘录，以及思考文本的长度，不保存思考全文。
 
+授权的两轴规则写在系统消息里。用户消息里的岗位正文和偏好仍是不可信数据，不能覆盖系统映射。正文不超过 8000 字时整段送出，并保留列表标签原串。超过上限则不发请求。报告里的 `outbound.messages` 是脱敏后的出站消息，带规则和用户内容的哈希，没有 Authorization。
+
 本云端账号不能把 secret 转发进来。不要把密钥贴进聊天、写进文件，或从 Actions、仓库 secret、本机凭证里找。没有安全获准的执行环境时，就停在离线包。
 
 ## 离线运行

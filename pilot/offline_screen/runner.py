@@ -11,6 +11,7 @@ reason 只是筛选短评。本运行器不产生摘要，也不放宽 scripts/d
 """
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -177,6 +178,8 @@ def source_text(record):
         "flags": list(record["flags"]),
         "description_excerpt": record["description_excerpt"],
         "description_chars": len(record["description_full"]),
+        "tags_list": record.get("tags_list") or "",
+        "requirements_preserved": bool(record.get("requirements_preserved", True)),
         "url": record["url"],
     }
 
@@ -341,6 +344,38 @@ def usage_from_outcome(outcome):
     }
 
 
+def outbound_artifact(adapter, records, preference_text, model):
+    """脱敏后的出站消息。不含 Authorization 或密钥。"""
+    if any(not record.get("requirements_preserved", True) for record in records):
+        return {
+            "captured": False,
+            "reason": "input_requirements_truncated",
+            "messages": None,
+            "rules_sha256": None,
+            "user_sha256": None,
+        }
+    body = adapter.build_request(records, preference_text or "", model)
+    messages = []
+    for message in body["messages"]:
+        content = message.get("content") if isinstance(message, dict) else ""
+        if not isinstance(content, str):
+            content = ""
+        messages.append({
+            "role": message.get("role") if isinstance(message, dict) else "",
+            "content": adapter._redact_text(content),
+        })
+    return {
+        "captured": True,
+        "model": body["model"],
+        "stream": body["stream"],
+        "max_tokens": body["max_tokens"],
+        "thinking": body["thinking"],
+        "messages": messages,
+        "rules_sha256": hashlib.sha256(messages[0]["content"].encode("utf-8")).hexdigest(),
+        "user_sha256": hashlib.sha256(messages[1]["content"].encode("utf-8")).hexdigest(),
+    }
+
+
 def run_trial(
     bundle_dir,
     jobs,
@@ -390,8 +425,16 @@ def run_trial(
         report["structural"]["failure_stage"] = problem
         report["structural"]["status"] = "not_run"
         return report
+    preference_text = ""
+    if isinstance(preference, dict) and isinstance(preference.get("text"), str):
+        preference_text = preference["text"]
+    report["outbound"] = outbound_artifact(adapter, records, preference_text, model)
     if model != OFFICIAL_MODEL:
         report["http"]["stage"] = "model_refused"
+        return report
+    if not report["outbound"]["captured"]:
+        report["http"]["stage"] = "input_requirements_truncated"
+        report["structural"]["failure_stage"] = "input_requirements_truncated"
         return report
     if not live:
         report["http"]["stage"] = "offline_not_called"

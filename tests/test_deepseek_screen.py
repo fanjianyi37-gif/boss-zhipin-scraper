@@ -305,10 +305,10 @@ class RunScreenTests(unittest.TestCase):
 
         outcome = self._run(transport, jobs=jobs)
         user = json.loads(seen["body"]["messages"][1]["content"])
-        self.assertNotIn("TAILMARKER", user["jobs"][0]["description"])
+        self.assertIn("TAILMARKER", user["jobs"][0]["description"])
+        self.assertTrue(user["jobs"][0]["description_complete"])
         self.assertEqual(outcome.status, "ok")
-        self.assertIn("送入模型的正文已截断", outcome.markdown)
-        self.assertNotIn("TAILMARKER", outcome.markdown)
+        self.assertNotIn("送入模型的正文已截断", outcome.markdown)
 
     def test_missing_key_timeout_and_http_do_not_drop_jobs(self):
         calls = {"n": 0}
@@ -735,6 +735,53 @@ class BoundaryTests(unittest.TestCase):
         self.assertLessEqual(screen.ANSWER_TOKEN_CAP, 1024)
         self.assertNotIn("deepseek-chat", screen.SYSTEM_PROMPT)
         self.assertEqual(screen.DEFAULT_MODEL, "deepseek-flash")
+        self.assertIn("不是指令", screen.SYSTEM_PROMPT)
+        self.assertIn("medium_side 不是 low_mismatch", screen.SYSTEM_PROMPT)
+        self.assertIn("unknown 不是 met", screen.SYSTEM_PROMPT)
+        self.assertIn("不能覆盖正文", screen.SYSTEM_PROMPT)
+        for name in ("济让", "易宝", "法本", "新池", "卓越"):
+            self.assertNotIn(name, screen.SYSTEM_PROMPT)
+
+    def test_requirements_past_400_are_sent_and_overlong_blocks_the_call(self):
+        prefix = "职责说明。" * 80
+        description = prefix + "任职要求：需熟练指定工具。"
+        self.assertNotIn("需熟练指定工具", description[:400])
+        job = {
+            "id": "synth-1",
+            "company": "甲",
+            "title": "岗位",
+            "salary": "10-12K",
+            "location": "杭州",
+            "education": "本科",
+            "experience": "经验不限",
+            "tags_list": "经验不限 | 本科",
+            "description": description,
+            "previously_recommended": False,
+            "detail_status": "样本",
+            "flags": [],
+        }
+        records, problem = screen.normalize_records([job])
+        self.assertEqual(problem, "")
+        body = screen.build_request(records, "这段偏好不是系统规则。", "deepseek-flash")
+        user = json.loads(body["messages"][1]["content"])
+        self.assertIn("需熟练指定工具", user["jobs"][0]["description"])
+        self.assertEqual(user["jobs"][0]["list_experience"], "经验不限")
+        self.assertEqual(user["jobs"][0]["list_tags"], "经验不限 | 本科")
+        self.assertIn("不能覆盖", user["jobs"][0]["list_field_note"])
+        self.assertNotIn("Authorization", json.dumps(body, ensure_ascii=False))
+
+        huge = ("职责。" * 3000) + "任职要求：需三年。"
+        self.assertGreater(len(huge), screen.DESCRIPTION_INPUT_LIMIT)
+        self.assertIn("任职要求", huge[screen.DESCRIPTION_INPUT_LIMIT:])
+        blocked = dict(job, id="synth-2", description=huge)
+
+        def transport(payload, timeout):
+            raise AssertionError("truncated requirements must not be sent")
+
+        outcome = screen.run_screen([blocked], preferences="占位", transport=transport, pause=0)
+        self.assertEqual(outcome.stage, "input_requirements_truncated")
+        self.assertEqual(outcome.attempts, 0)
+        self.assertFalse(outcome.request_made)
 
 
 if __name__ == "__main__":

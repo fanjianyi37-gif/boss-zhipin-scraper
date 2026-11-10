@@ -130,6 +130,15 @@ class OfflineDefaultTests(_NetworkGuard):
         self.assertEqual(report["items"][0]["validation"], "not_called")
         self.assertIsNone(report["items"][0]["output"])
         self.assertIn("8-12K", report["items"][0]["source_text"]["salary"])
+        again = runner.run_trial(
+            HERE, jobs, sample=meta, expectations=expectations, preference=preference, live=False
+        )
+        self.assertEqual(report["outbound"]["rules_sha256"], again["outbound"]["rules_sha256"])
+        self.assertEqual(report["outbound"]["user_sha256"], again["outbound"]["user_sha256"])
+        outbound_text = json.dumps(report["outbound"], ensure_ascii=False)
+        self.assertNotIn("Authorization", outbound_text)
+        self.assertNotIn("DEEPSEEK_API_KEY", outbound_text)
+        self.assertIn("medium_side 不是 low_mismatch", report["outbound"]["messages"][0]["content"])
 
     def test_live_flag_without_frozen_files_makes_no_request(self):
         jobs, meta, expectations, preference = load_public_jobs()
