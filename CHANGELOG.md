@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 新增
+- 修复 DeepSeek 传输把超时秒数当成 POST 正文的问题。`opener.open` 的第二个位置参数是 data，超时必须用 `timeout=`。传输失败不再记成结构通过率 0。响应里的缓存 token 会进入整批费用计算，逐条费用仍是未知
 - 离线筛选试验包 `pilot/offline_screen/`：复用既有校验，默认不联网。显式 `--live` 且偏好和人工期望都已冻结时，最多一次 `deepseek-flash` 的 `/chat/completions` 请求，自动重试为 0。公开 4 条 fixture 不代表尚未到达的真实样本。`reason` 仍只是筛选短评，不改成摘要 schema
 - 可选 DeepSeek 文本筛选：`scripts/deepseek_screen.py`，由 `scripts/job_summary.py --deepseek` 显式开启。默认摘要、抓取、`--analysis` 都不调用模型；本仓库原本没有分类模型，这个入口不替换既有模型。没有 `--preferences` 或 `--preferences-file` 时不请求接口，也不编造偏好。密钥只读进程环境变量 `DEEPSEEK_API_KEY`，默认模型 `deepseek-flash`。请求体只使用已核对过的 `model`、`messages`、`max_tokens`、`stream`。缺密钥、HTTP 错误、超时、非 JSON、截断、缺岗位、重复或未知 id、短评里的链接，以及短评中的薪资/学历/城市对不上本地记录时，丢弃模型输出并回退原摘要，不删除岗位。传输失败最多再试 1 次，校验失败不重试。链接、薪资、地区、学历、经验、`is_new` 和输入里已有的 `previously_recommended`、来源警示都由本地记录渲染。不写 sent 标记，不发送消息，不改采集链路。接口费用另计，不能据此估计平台额度
 - 一键发版工作流（#107 后续）：`make-release.yml`（Actions → Run workflow 填版本号）自动完成版本四处对齐 + `uv lock` + CHANGELOG 定版 + 全量单测，并推好 `release/vX.Y.Z` 分支给出开 PR 链接；`release.yml` 改为双路触发——release PR 合并进 master 时按提交首行识别 `chore(release): x.y.z` 自动补打 tag 并构建发布（手动 `git push tag v*` 的老路继续可用），发版手动动作只剩「开 PR 并合并」。事件链刻意不依赖 GITHUB_TOKEN 触发下游（GitHub 防递归会吞掉 bot 开的 PR/推的 tag，且本仓库分支保护对管理员也强制必需 check）。`release.yml` 现额外附稳定文件名的 `boss_zhipin_scraper-latest-py3-none-any.whl`，支持 `releases/latest/download/` 固定 URL 永远装最新版（pip 以 wheel 元数据识别版本，实测通过）。README 双语「安装」章节新增方式 6（pip / uv 直接安装），CLI 章节补 latest 固定 URL。`package-skill.sh` 的 `sed -i` 改为 BSD/GNU 双平台兼容（make-release 在 ubuntu 上复用该脚本）

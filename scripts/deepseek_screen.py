@@ -71,6 +71,10 @@ class ScreenError(Exception):
     finish_reason = None
     prompt_tokens = None
     completion_tokens = None
+    usage = None
+    error_type = None
+    error_reason = None
+    service_received = False
 
 
 class MissingKeyError(ScreenError):
@@ -127,6 +131,10 @@ class ScreenOutcome:
     validation: str = ""
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    usage: dict | None = None
+    error_type: str | None = None
+    error_reason: str | None = None
+    service_received: bool = False
     items: list | None = None
     markdown: str = ""
     notice: str = ""
@@ -145,6 +153,8 @@ class ScreenOutcome:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "validation": self.validation,
+            "error_type": self.error_type,
+            "service_received": self.service_received,
             "job_count": self.job_count,
             "model": self.model,
         }
@@ -518,44 +528,73 @@ def validate_items(result, records, preferences):
     return cleaned
 
 
-def _usage_pair(payload):
+_USAGE_KEYS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "prompt_cache_hit_tokens",
+    "prompt_cache_miss_tokens",
+)
+
+
+def _usage_dict(payload):
     usage = payload.get("usage") if isinstance(payload, dict) else None
     if not isinstance(usage, dict):
-        return None, None
-    prompt_tokens = usage.get("prompt_tokens")
-    completion_tokens = usage.get("completion_tokens")
-    if not isinstance(prompt_tokens, int) or isinstance(prompt_tokens, bool):
-        prompt_tokens = None
-    if not isinstance(completion_tokens, int) or isinstance(completion_tokens, bool):
-        completion_tokens = None
-    return prompt_tokens, completion_tokens
+        return {}
+    cleaned = {}
+    for key in _USAGE_KEYS:
+        value = usage.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _public_error(exc):
+    """保留异常类型和短原因。含密钥字样的文本不进入报告。"""
+    name = type(exc).__name__
+    text = " ".join(str(exc).split())
+    lowered = text.lower()
+    if any(token in lowered for token in ("bearer", "authorization", "api_key", "deepseek_api_key")):
+        text = name
+    if len(text) > 160:
+        text = text[:160]
+    return name, text
+
+
+def _usage_pair(payload):
+    usage = _usage_dict(payload)
+    return usage.get("prompt_tokens"), usage.get("completion_tokens")
 
 
 def interpret_completion(payload, records, preferences):
-    prompt_tokens, completion_tokens = _usage_pair(payload)
+    usage = _usage_dict(payload)
+    prompt_tokens, completion_tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
+
+    def fail(stage, finish_reason=None):
+        err = ModelOutputError(
+            stage,
+            finish_reason=finish_reason,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+        err.usage = usage
+        err.service_received = True
+        raise err
+
     if not isinstance(payload, dict):
-        raise ModelOutputError("api_shape", prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+        fail("api_shape")
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        raise ModelOutputError("api_shape", prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+        fail("api_shape")
     choice = choices[0]
     finish = choice.get("finish_reason")
     finish_text = finish if isinstance(finish, str) else None
     if finish != "stop":
-        raise ModelOutputError(
-            "truncated",
-            finish_reason=finish_text,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        )
+        fail("truncated", finish_text)
     message = choice.get("message")
     if not isinstance(message, dict):
-        raise ModelOutputError(
-            "api_shape",
-            finish_reason=finish_text,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        )
+        fail("api_shape", finish_text)
     try:
         parsed = parse_model_json(message.get("content"))
         items = validate_items(parsed, records, preferences)
@@ -563,8 +602,10 @@ def interpret_completion(payload, records, preferences):
         exc.finish_reason = exc.finish_reason or finish_text
         exc.prompt_tokens = prompt_tokens
         exc.completion_tokens = completion_tokens
+        exc.usage = usage
+        exc.service_received = True
         raise
-    return items, prompt_tokens, completion_tokens, finish_text
+    return items, usage, finish_text
 
 
 def _markdown_label(record):
@@ -623,8 +664,9 @@ def _api_key():
 
 
 def _open(request, timeout):
+    """timeout 必须是关键字。opener.open 的第二个位置参数是 data，不是超时。"""
     opener = urllib.request.build_opener(_NoRedirect)
-    return opener.open(request, timeout)
+    return opener.open(request, timeout=timeout)
 
 
 def default_transport(body, timeout):
@@ -646,14 +688,29 @@ def default_transport(body, timeout):
         with _open(request, timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
-        raise HTTPStatusError(exc.code) from exc
+        err = HTTPStatusError(exc.code)
+        err.error_type, err.error_reason = _public_error(exc)
+        err.service_received = True
+        raise err from exc
     except (TimeoutError, socket.timeout) as exc:
-        raise DeadlineError() from exc
+        err = DeadlineError()
+        err.error_type, err.error_reason = _public_error(exc)
+        raise err from exc
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", None)
         if isinstance(reason, (TimeoutError, socket.timeout)):
-            raise DeadlineError() from exc
-        raise TransportError() from exc
+            err = DeadlineError()
+            err.error_type, err.error_reason = _public_error(reason)
+            raise err from exc
+        err = TransportError()
+        err.error_type, err.error_reason = _public_error(exc)
+        raise err from exc
+    except TypeError as exc:
+        # 客户端组包错误不是暂时故障，不能自动再请求。
+        err = TransportError()
+        err.retryable = False
+        err.error_type, err.error_reason = _public_error(exc)
+        raise err from exc
     try:
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -728,7 +785,7 @@ def run_screen(
     for attempt in range(1, attempts_limit + 1):
         try:
             payload = caller(body, timeout_s)
-            items, prompt_tokens, completion_tokens, finish = interpret_completion(
+            items, usage, finish = interpret_completion(
                 payload, records, preference_text.strip()
             )
         except MissingKeyError as exc:
@@ -756,8 +813,10 @@ def run_screen(
                 request_made=True,
                 http_status=200,
                 finish_reason=finish,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                usage=usage,
+                service_received=True,
                 items=items,
                 markdown=render_markdown(records, items),
                 **common,
@@ -765,6 +824,7 @@ def run_screen(
 
     validation = last_error.stage if isinstance(last_error, ModelOutputError) else ""
     made_request = not isinstance(last_error, MissingKeyError)
+    usage = getattr(last_error, "usage", None)
     return _finish(
         "fallback",
         getattr(last_error, "stage", "screen_error"),
@@ -775,6 +835,10 @@ def run_screen(
         validation=validation,
         prompt_tokens=getattr(last_error, "prompt_tokens", None),
         completion_tokens=getattr(last_error, "completion_tokens", None),
+        usage=usage if isinstance(usage, dict) else None,
+        error_type=getattr(last_error, "error_type", None),
+        error_reason=getattr(last_error, "error_reason", None),
+        service_received=bool(getattr(last_error, "service_received", False)),
         **common,
     )
 

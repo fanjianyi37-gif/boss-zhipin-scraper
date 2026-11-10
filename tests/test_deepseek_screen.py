@@ -1,3 +1,4 @@
+import http.client
 import importlib.util
 import io
 import json
@@ -140,7 +141,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(caught.exception.stage, "non_json")
 
         fenced = "```json\n" + json.dumps(self.valid, ensure_ascii=False) + "\n```"
-        items, _prompt, _completion, finish = screen.interpret_completion(
+        items, _usage, finish = screen.interpret_completion(
             completion(fenced), self.records, PREFERENCES
         )
         self.assertEqual(finish, "stop")
@@ -458,6 +459,42 @@ class RunScreenTests(unittest.TestCase):
         self.assertEqual(outcome.status, "ok")
         self.assertIn("学历要求冲突", outcome.markdown)
         self.assertIn("实际工作地冲突", outcome.markdown)
+
+    def test_real_opener_keeps_bytes_body_and_keyword_timeout(self):
+        captured = {"responses": 0, "chunks": [], "timeouts": []}
+
+        def connect(conn):
+            raise AssertionError("connect must not open a socket in this test")
+
+        def send(conn, data):
+            captured["chunks"].append(data)
+
+        def getresponse(conn):
+            captured["responses"] += 1
+            captured["timeouts"].append(conn.timeout)
+            raise TimeoutError("blocked-before-service")
+
+        body = {
+            "model": "deepseek-flash",
+            "messages": [{"role": "user", "content": "ok"}],
+            "max_tokens": 16,
+            "stream": False,
+        }
+        expected = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": SECRET_KEY}, clear=False):
+            with mock.patch.object(http.client.HTTPSConnection, "connect", connect), \
+                 mock.patch.object(http.client.HTTPConnection, "connect", connect), \
+                 mock.patch.object(http.client.HTTPConnection, "send", send), \
+                 mock.patch.object(http.client.HTTPConnection, "getresponse", getresponse):
+                with self.assertRaises(screen.DeadlineError) as caught:
+                    screen.default_transport(body, 7.25)
+        self.assertEqual(captured["responses"], 1)
+        self.assertEqual(captured["timeouts"], [7.25])
+        self.assertIn(expected, captured["chunks"])
+        self.assertFalse(any(isinstance(chunk, float) for chunk in captured["chunks"]))
+        self.assertEqual(caught.exception.error_type, "TimeoutError")
+        self.assertNotIn(SECRET_KEY, caught.exception.error_reason or "")
+        self.assertNotIn("bearer", (caught.exception.error_reason or "").lower())
 
     def test_default_transport_redacts_key_body_and_does_not_follow_redirects(self):
         self.assertIsNone(screen._NoRedirect().redirect_request(

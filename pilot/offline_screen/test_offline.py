@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """在隔离目录里证明默认不联网，并且真实路径最多一次生成请求。"""
 
+import http.client
 import json
 import os
 import socket
@@ -198,11 +199,14 @@ class OneRequestTests(_NetworkGuard):
         self.assertEqual(calls["n"], 1)
         self.assertEqual(report["http"]["generation_http_requests"], 1)
         self.assertEqual(report["http"]["automatic_retries"], 0)
+        self.assertTrue(report["http"]["dispatch_attempted"])
+        self.assertFalse(report["http"]["service_received"])
         self.assertEqual(report["http"]["stage"], "timeout")
         self.assertTrue(report["http"]["fallback"])
-        self.assertEqual(report["structural"]["passed_items"], 0)
+        self.assertEqual(report["structural"]["status"], "not_run")
+        self.assertIsNone(report["structural"]["passed_items"])
         self.assertEqual(report["structural"]["denominator_jobs"], 4)
-        self.assertEqual(report["structural"]["rate"], 0)
+        self.assertIsNone(report["structural"]["rate"])
         self.assertEqual(report["human_expectation"]["status"], "not_scored")
         self.assertFalse(report["trial_accepted"])
 
@@ -228,6 +232,10 @@ class OneRequestTests(_NetworkGuard):
         self.assertEqual(calls["n"], 1)
         self.assertEqual(failed["http"]["stage"], "non_json")
         self.assertEqual(failed["http"]["generation_http_requests"], 1)
+        self.assertTrue(failed["http"]["service_received"])
+        self.assertEqual(failed["structural"]["status"], "failed")
+        self.assertEqual(failed["structural"]["rate"], 0)
+        self.assertEqual(failed["structural"]["denominator_jobs"], 4)
         self.assertEqual(failed["items"][0]["validation"], "non_json")
         self.assertIsNone(failed["items"][0]["output"])
 
@@ -349,6 +357,86 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(report["amortized_estimate"]["label"], "estimate_not_measurement")
         self.assertEqual(report["amortized_estimate"]["off_peak"]["batch_usd"], "0.15000000")
         self.assertEqual(report["amortized_estimate"]["peak"]["batch_usd"], "0.30000000")
+
+
+class ProductionTransportTests(_NetworkGuard):
+    def test_bundled_transport_sends_bytes_once_and_stops_on_timeout(self):
+        jobs, meta, _expectations, _preference = load_public_jobs()
+        captured = {"responses": 0, "chunks": []}
+
+        def connect(conn):
+            raise AssertionError("connect must not open a socket in this test")
+
+        def send(conn, data):
+            captured["chunks"].append(data)
+
+        def getresponse(conn):
+            captured["responses"] += 1
+            captured["timeout"] = conn.timeout
+            raise TimeoutError("blocked-before-service")
+
+        adapter = runner.load_adapter(HERE)
+        with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": DECOY}, clear=False):
+            with mock.patch.object(http.client.HTTPSConnection, "connect", connect), \
+                 mock.patch.object(http.client.HTTPConnection, "connect", connect), \
+                 mock.patch.object(http.client.HTTPConnection, "send", send), \
+                 mock.patch.object(http.client.HTTPConnection, "getresponse", getresponse):
+                report = runner.run_trial(
+                    HERE,
+                    jobs,
+                    sample=meta,
+                    expectations=frozen_expectations([job["id"] for job in jobs]),
+                    preference=frozen_preference(),
+                    live=True,
+                    transport=adapter.default_transport,
+                )
+        self.assertEqual(captured["responses"], 1)
+        self.assertEqual(captured["timeout"], 45)
+        self.assertTrue(any(isinstance(chunk, bytes) and b"deepseek-flash" in chunk for chunk in captured["chunks"]))
+        self.assertFalse(any(isinstance(chunk, float) for chunk in captured["chunks"]))
+        self.assertEqual(report["http"]["generation_http_requests"], 1)
+        self.assertEqual(report["http"]["automatic_retries"], 0)
+        self.assertTrue(report["http"]["dispatch_attempted"])
+        self.assertFalse(report["http"]["service_received"])
+        self.assertEqual(report["http"]["stage"], "timeout")
+        self.assertEqual(report["http"]["error_type"], "TimeoutError")
+        self.assertNotIn(DECOY, json.dumps(report, ensure_ascii=False))
+        self.assertEqual(report["structural"]["status"], "not_run")
+        self.assertIsNone(report["structural"]["rate"])
+
+    def test_usage_fields_price_the_batch_and_leave_each_item_unknown(self):
+        jobs, meta, _expectations, _preference = load_public_jobs()
+        calls = {"n": 0}
+
+        def inner(body, timeout):
+            calls["n"] += 1
+            payload = completion(valid_content(jobs))
+            payload["usage"] = {
+                "prompt_tokens": 1000000,
+                "completion_tokens": 0,
+                "prompt_cache_hit_tokens": 1000000,
+                "prompt_cache_miss_tokens": 0,
+            }
+            return payload
+
+        from datetime import datetime, timezone
+        report = runner.run_trial(
+            HERE,
+            jobs,
+            sample=meta,
+            expectations=frozen_expectations([job["id"] for job in jobs]),
+            preference=frozen_preference(),
+            live=True,
+            transport=inner,
+            moment=datetime(2026, 11, 8, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(calls["n"], 1)
+        self.assertTrue(report["http"]["service_received"])
+        self.assertEqual(report["structural"]["rate"], 1)
+        self.assertEqual(report["cost"]["per_item_measured_cost"], "unknown")
+        self.assertEqual(report["cost"]["batch_measured_cost"], "0.00300000")
+        self.assertEqual(report["cost"]["amortized_estimate"]["label"], "estimate_not_measurement")
+        self.assertEqual(report["usage"]["prompt_cache_hit_tokens"], 1000000)
 
 
 class AdapterReuseTests(unittest.TestCase):

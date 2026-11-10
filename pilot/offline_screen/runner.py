@@ -23,6 +23,26 @@ OFFICIAL_MODEL = "deepseek-flash"
 MAX_GENERATION_REQUESTS = 1
 SCHEMA_NAME = "deepseek_screen.items.v1"
 SCHEMA_FIELDS = ("id", "group", "reason")
+MODEL_STRUCTURE_STAGES = {
+    "non_json",
+    "truncated",
+    "root_schema",
+    "row_schema",
+    "id_type",
+    "unknown_id",
+    "duplicate_id",
+    "missing_id",
+    "group_type",
+    "group",
+    "reason_type",
+    "reason_length",
+    "reason_format",
+    "generated_link",
+    "ungrounded_salary",
+    "ungrounded_degree",
+    "ungrounded_place",
+    "api_shape",
+}
 _ADAPTERS = {}
 
 
@@ -181,14 +201,23 @@ def structural_result(job_count, outcome):
             "failure_stage": None,
             "note": "整批通过既有校验。失败时整批作废，不会出现部分通过。",
         }
-    rate = 0 if job_count else None
+    if outcome.stage in MODEL_STRUCTURE_STAGES:
+        rate = 0 if job_count else None
+        return {
+            "status": "failed",
+            "passed_items": 0,
+            "denominator_jobs": job_count,
+            "rate": rate,
+            "failure_stage": outcome.stage,
+            "note": "服务返回了模型输出，但整批没通过既有校验。分母是输入岗位数。",
+        }
     return {
-        "status": "failed",
-        "passed_items": 0,
+        "status": "not_run",
+        "passed_items": None,
         "denominator_jobs": job_count,
-        "rate": rate,
+        "rate": None,
         "failure_stage": outcome.stage,
-        "note": "整批未通过既有校验，passed_items 为 0，分母是输入岗位数。",
+        "note": "传输失败或服务没有返回可校验的模型输出。结构通过率不适用，不是 0。",
     }
 
 
@@ -270,10 +299,14 @@ def blank_http():
     return {
         "generation_http_requests": 0,
         "automatic_retries": 0,
+        "dispatch_attempted": False,
+        "service_received": False,
         "status": None,
         "finish_reason": None,
         "stage": "not_called",
         "fallback": None,
+        "error_type": None,
+        "error_reason": None,
     }
 
 
@@ -281,10 +314,14 @@ def http_from_outcome(outcome, request_count):
     return {
         "generation_http_requests": request_count,
         "automatic_retries": 0,
+        "dispatch_attempted": request_count > 0,
+        "service_received": bool(getattr(outcome, "service_received", False)),
         "status": outcome.http_status,
         "finish_reason": outcome.finish_reason,
         "stage": outcome.stage,
         "fallback": outcome.status != "ok",
+        "error_type": getattr(outcome, "error_type", None),
+        "error_reason": getattr(outcome, "error_reason", None),
         "prompt_tokens": outcome.prompt_tokens,
         "completion_tokens": outcome.completion_tokens,
     }
@@ -293,13 +330,14 @@ def http_from_outcome(outcome, request_count):
 def usage_from_outcome(outcome):
     if outcome is None:
         return None
+    usage = getattr(outcome, "usage", None)
+    if isinstance(usage, dict) and usage:
+        return dict(usage)
     if outcome.prompt_tokens is None and outcome.completion_tokens is None:
         return None
     return {
         "prompt_tokens": outcome.prompt_tokens,
         "completion_tokens": outcome.completion_tokens,
-        "prompt_cache_hit_tokens": None,
-        "prompt_cache_miss_tokens": None,
     }
 
 
