@@ -1,0 +1,7 @@
+{
+  "status": "not_frozen",
+  "frozen_at": null,
+  "sample_id": null,
+  "note": "真实 5 到 10 条样本尚未到达，人工期望尚未冻结。本文件不是验收标准。不要把 public fixture 的 4 条公开岗位写成期望分组，也不要把它当成真实 JD。",
+  "items": []
+}

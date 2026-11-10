@@ -85,6 +85,7 @@ mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
 cp SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
 cp scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+cp scripts/deepseek_screen.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data
 cp data/city_codes.json ~/.hermes/skills/data-science/boss-zhipin-scraper/data/
 ```
@@ -101,6 +102,8 @@ curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/maste
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/deepseek_screen.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/deepseek_screen.py && \
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/data/city_codes.json \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
@@ -270,6 +273,34 @@ python3 scripts/job_summary.py --prompt-only
 python3 scripts/job_summary.py --company "字节跳动,SHEIN"
 ```
 
+### Optional: DeepSeek text screen
+
+Scraping, `--analysis`, and the summary above do not call a model. This repository has no classifier to replace. `--deepseek` adds a separate text grouping and is off unless you pass it. Without that flag, requests, saved files, and the summary stay as they are.
+
+It does not read a local résumé, score a person against a job, open a browser, send a message, or write a sent marker. A missing key, HTTP error, timeout, non-JSON body, truncated output, missing or unknown id, a link inside the short reason, or a salary, degree, or city that is not in the local record discards the model output. The original summary and prompt are still printed, and no job is removed.
+
+You must supply the screening preference. With neither `--preferences` nor `--preferences-file`, the command does not call the API and does not invent a city or job direction. `--company` still applies before the screen, using the same rule as the summary, so jobs excluded by that filter are not sent to the model.
+
+```bash
+python3 scripts/job_summary.py \
+  --input ~/.boss-zhipin-scraper/job-result/boss_jobs_20260625_1200.json \
+  --details ~/.boss-zhipin-scraper/job-result/boss_details_20260625_1200.json \
+  --deepseek \
+  --preferences "Screen only from this text: prefer Hangzhou Yuhang; prefer video or image evaluation over generic evaluation. Do not mark a row as priority when education or work location conflicts."
+```
+
+The key is read only from the process environment variable `DEEPSEEK_API_KEY`. The default model is `deepseek-flash` (`--deepseek-model` can change it). This does not assume the older `deepseek-chat` name still exists. The request body has only `model`, `messages`, `max_tokens`, and `stream=false`. One call sends at most 20 jobs (`--deepseek-max-jobs` can only lower that). The timeout defaults to 45 seconds and is clamped to 5–60 seconds. Transport failures get one retry, and the total is never more than 3 attempts. Invalid output is not retried.
+
+The status line records status, HTTP status, finish reason, attempt count, and token usage. It does not record the key, the full preference, or job text. The model may return only `id`, `group` (优先 / 观察 / 不推荐), and a short reason. Links, salary, location, education, experience, history, and source warnings are copied from the local record. `is_new` means the job id was absent from this repo's previous result file. It is not a send or recommendation log. An input field `previously_recommended` is kept as stored.
+
+Omit `--deepseek` to turn it off. Group labels are not written back into the scrape file. `--deepseek-output` can save the validated JSON; a file name starting with `sent` is refused.
+
+DeepSeek bills that account separately. This repository cannot estimate any platform-quota savings. Use the returned token counts.
+
+A daily-report script that was never pushed to this repository still has to be compared on that machine. This flag does not replace it, and it does not change production scraping or sending.
+
+The offline sample package lives in `pilot/offline_screen/`. It does not call the network unless `--live` is set, and the bundled 4 public jobs are not the real sample that has not arrived. See that directory's README. This package does not make DeepSeek the production default.
+
 After installing the package you can also use the entry command:
 
 ```bash
@@ -292,7 +323,8 @@ boss-zhipin-scraper/
 │   └── city_codes.json   # Full city-code map
 ├── scripts/
 │   ├── boss_cdp_raw.py   # Main scraping script
-│   └── job_summary.py    # Post-scrape summary + prompt
+│   ├── job_summary.py    # Post-scrape summary + prompt
+│   └── deepseek_screen.py # Optional text screen, off by default
 └── requirements.txt
 ```
 

@@ -87,6 +87,7 @@ mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts
 cp SKILL.md ~/.hermes/skills/data-science/boss-zhipin-scraper/
 cp scripts/boss_cdp_raw.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 cp scripts/job_summary.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
+cp scripts/deepseek_screen.py ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data
 cp data/city_codes.json ~/.hermes/skills/data-science/boss-zhipin-scraper/data/
 ```
@@ -103,6 +104,8 @@ curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/maste
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/boss_cdp_raw.py && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/job_summary.py \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/job_summary.py && \
+curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/scripts/deepseek_screen.py \
+  -o ~/.hermes/skills/data-science/boss-zhipin-scraper/scripts/deepseek_screen.py && \
 mkdir -p ~/.hermes/skills/data-science/boss-zhipin-scraper/data && \
 curl -sL https://raw.githubusercontent.com/eatmoreduck/boss-zhipin-scraper/master/data/city_codes.json \
   -o ~/.hermes/skills/data-science/boss-zhipin-scraper/data/city_codes.json
@@ -272,6 +275,34 @@ python3 scripts/job_summary.py --prompt-only
 python3 scripts/job_summary.py --company "字节跳动,SHEIN"
 ```
 
+### 可选：DeepSeek 文本筛选
+
+抓取、`--analysis` 和上面的摘要默认都不调用模型。仓库里没有现成的分类模型，下面这个开关是另加的文本分组，不替换任何既有步骤。不传 `--deepseek` 时，请求、落盘和摘要与原来相同。
+
+它不读取本地简历，不给个人打分，不打开浏览器，不发送消息，也不写 sent 标记。缺密钥、HTTP 错误、超时、返回不是合法 JSON、输出被截断、漏了岗位、出现未知 id，或短评里带有链接、以及本地记录里没有的薪资、学历、城市时，这次模型输出作废，原来的摘要和提示词照常打印，岗位一条不删。
+
+筛选偏好要由你提供。没有 `--preferences` 或 `--preferences-file` 时不会调用接口，也不会编造城市或岗位方向。`--company` 仍先于筛选，规则和摘要相同，被公司条件排除的岗位不会送给模型。
+
+```bash
+python3 scripts/job_summary.py \
+  --input ~/.boss-zhipin-scraper/job-result/boss_jobs_20260625_1200.json \
+  --details ~/.boss-zhipin-scraper/job-result/boss_details_20260625_1200.json \
+  --deepseek \
+  --preferences "只根据这段文字筛选：杭州余杭优先；视频或图片评测优先于泛评测。学历或工作地冲突时不要把该条标为优先。"
+```
+
+密钥只从当前进程的环境变量 `DEEPSEEK_API_KEY` 读取。默认模型是 `deepseek-flash`，可以用 `--deepseek-model` 更换。这里不假定旧的 `deepseek-chat` 模型名仍然可用。请求体只有 `model`、`messages`、`max_tokens` 和 `stream=false`。单次最多 20 条岗位（`--deepseek-max-jobs` 只能再调低）。超时默认 45 秒，并限制在 5 到 60 秒。传输失败最多再试 1 次，总尝试不超过 3 次；校验失败不重试。
+
+终端状态行只含状态、HTTP 状态、结束原因、尝试次数和 token 用量，不记录密钥、偏好全文或职位正文。模型只能返回 `id`、`group`（优先 / 观察 / 不推荐）和短评。链接、薪资、地区、学历、经验、历史状态和来源警示都从本地记录印出来。`is_new` 只表示本仓库历史结果里有没有见过该 `job_id`，不是发送或推荐流水。输入里如果已经有 `previously_recommended`，按原值保留。
+
+去掉 `--deepseek` 即关闭。分组结果不会回写抓取文件。`--deepseek-output` 可以另存校验通过的 JSON；文件名以 `sent` 开头的路径会被拒绝。
+
+DeepSeek 的费用由该账户另计。不能从这里估计能节省多少平台额度，用量以接口返回的 token 计数为准。
+
+如果本机另有未纳入本仓库的日报脚本，需要在那台机器上对照。这个开关不代替那些脚本，也没有改生产采集或发送。
+
+离线小样本包在 `pilot/offline_screen/`。它默认不联网，也不把公开的 4 条 fixture 当成尚未到达的真实岗位。说明见该目录的 README。本包没有把 DeepSeek 设成生产默认模型。
+
 打包安装后也可以使用入口命令：
 
 ```bash
@@ -293,7 +324,8 @@ boss-zhipin-scraper/
 │   └── city_codes.json   # 全量城市码表
 ├── scripts/
 │   ├── boss_cdp_raw.py   # 抓取主脚本
-│   └── job_summary.py    # 抓取后摘要 + 提示词
+│   ├── job_summary.py    # 抓取后摘要 + 提示词
+│   └── deepseek_screen.py # 可选文本筛选，默认不启用
 └── requirements.txt
 ```
 

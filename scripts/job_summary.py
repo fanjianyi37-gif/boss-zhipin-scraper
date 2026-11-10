@@ -16,6 +16,14 @@ try:
 except ImportError:
     import boss_cdp_raw as boss
 
+try:
+    from scripts import deepseek_screen
+except ImportError:
+    try:
+        import deepseek_screen
+    except ImportError:
+        deepseek_screen = None
+
 
 DEFAULT_RESULT_DIR = boss.DEFAULT_RESULT_DIR
 
@@ -369,6 +377,49 @@ def build_arg_parser():
     output_group = parser.add_mutually_exclusive_group()
     output_group.add_argument("--summary-only", action="store_true", help="只输出聚合摘要")
     output_group.add_argument("--prompt-only", action="store_true", help="只输出提示词")
+    parser.add_argument(
+        "--deepseek",
+        action="store_true",
+        help="显式启用可选 DeepSeek 文本筛选。默认关闭；失败时仍输出原摘要，不删除岗位，不发送消息",
+    )
+    parser.add_argument(
+        "--preferences",
+        default=None,
+        help="筛选偏好原文。只在与 --deepseek 合用时生效；不传且无 --preferences-file 时不调用接口、不编造偏好",
+    )
+    parser.add_argument(
+        "--preferences-file",
+        default=None,
+        help="从 UTF-8 文本文件读取筛选偏好。与 --preferences 同时传入时不调用接口",
+    )
+    parser.add_argument(
+        "--deepseek-model",
+        default=None,
+        help="可选筛选使用的模型。默认 deepseek-flash；不假定旧的 deepseek-chat 仍存在",
+    )
+    parser.add_argument(
+        "--deepseek-timeout",
+        type=float,
+        default=None,
+        help="可选筛选的单次超时秒数，会被限制在 5 到 60 秒",
+    )
+    parser.add_argument(
+        "--deepseek-max-attempts",
+        type=int,
+        default=None,
+        help="传输失败时的尝试次数上限，最大 3。输出校验失败不重试",
+    )
+    parser.add_argument(
+        "--deepseek-max-jobs",
+        type=int,
+        default=None,
+        help="单次送入筛选的岗位上限，最大 20。超出则不调用接口，也不删岗位",
+    )
+    parser.add_argument(
+        "--deepseek-output",
+        default=None,
+        help="校验通过后写入筛选 JSON。拒绝文件名以 sent 开头的路径；失败时不写文件",
+    )
     return parser
 
 
@@ -433,7 +484,82 @@ def main(argv=None):
             print("\n--- 可复制提示词 ---")
         print(build_prompt(summary))
 
+    if args.deepseek:
+        print()
+        emit_deepseek_screen(args, jobs, details)
+
     return 0
+
+
+def emit_deepseek_screen(args, jobs, details):
+    """在原摘要之后附加可选筛选。不改 jobs / details，也不改采集文件。"""
+    if deepseek_screen is None:
+        print("DEEPSEEK_SCREEN " + json.dumps({
+            "status": "fallback",
+            "stage": "screen_module_missing",
+            "job_count": len(jobs) if isinstance(jobs, list) else 0,
+        }, ensure_ascii=False))
+        print("未找到 deepseek_screen.py，已回退到原有摘要，岗位未删除。")
+        return
+
+    preferences, preference_stage = deepseek_screen.read_preference_args(
+        args.preferences, args.preferences_file
+    )
+    model = args.deepseek_model or deepseek_screen.DEFAULT_MODEL
+    if preference_stage:
+        outcome = deepseek_screen._finish(
+            "fallback",
+            preference_stage,
+            model=model,
+            job_count=len(jobs) if isinstance(jobs, list) else 0,
+            source_ids=deepseek_screen._source_ids(jobs),
+        )
+    else:
+        outcome = deepseek_screen.run_screen(
+            jobs,
+            details,
+            preferences,
+            model=model,
+            timeout=deepseek_screen.DEFAULT_TIMEOUT if args.deepseek_timeout is None else args.deepseek_timeout,
+            max_attempts=(
+                deepseek_screen.DEFAULT_ATTEMPTS
+                if args.deepseek_max_attempts is None
+                else args.deepseek_max_attempts
+            ),
+            max_jobs=(
+                deepseek_screen.HARD_MAX_JOBS
+                if args.deepseek_max_jobs is None
+                else args.deepseek_max_jobs
+            ),
+            pause=1.0,
+        )
+    print(outcome.status_line())
+    print(outcome.notice)
+    if outcome.markdown:
+        print()
+        print(outcome.markdown)
+    if not args.deepseek_output:
+        return
+    try:
+        records = []
+        if outcome.status == "ok":
+            records, _problem = deepseek_screen.normalize_records(jobs, details or [])
+        written = deepseek_screen.write_validated_screen(args.deepseek_output, outcome, records)
+    except deepseek_screen.SentMarkerPathError:
+        print("DEEPSEEK_SCREEN_WRITE " + json.dumps(
+            {"status": "refused", "stage": "sent_marker_path"}, ensure_ascii=False
+        ))
+    except OSError:
+        print("DEEPSEEK_SCREEN_WRITE " + json.dumps(
+            {"status": "error", "stage": "write_failed"}, ensure_ascii=False
+        ))
+    else:
+        if written:
+            print("DEEPSEEK_SCREEN_WRITE " + json.dumps({"status": "ok"}, ensure_ascii=False))
+        else:
+            print("DEEPSEEK_SCREEN_WRITE " + json.dumps(
+                {"status": "skipped", "stage": "not_validated"}, ensure_ascii=False
+            ))
 
 
 if __name__ == "__main__":

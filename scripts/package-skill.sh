@@ -98,12 +98,13 @@ mkdir -p "$STAGE/scripts" "$STAGE/data"
 cp "$SKILL_MD" "$STAGE/SKILL.md"
 cp "$REPO_ROOT/scripts/boss_cdp_raw.py" "$STAGE/scripts/"
 cp "$REPO_ROOT/scripts/job_summary.py" "$STAGE/scripts/"
+cp "$REPO_ROOT/scripts/deepseek_screen.py" "$STAGE/scripts/"
 cp "$REPO_ROOT/data/city_codes.json" "$STAGE/data/"
 cp "$REPO_ROOT/LICENSE" "$STAGE/LICENSE" 2>/dev/null || true
 cp "$REPO_ROOT/README.md" "$STAGE/README.md"
 
 # Post-stage validation: referenced files must exist, no junk inside.
-for ref in scripts/boss_cdp_raw.py scripts/job_summary.py data/city_codes.json; do
+for ref in scripts/boss_cdp_raw.py scripts/job_summary.py scripts/deepseek_screen.py data/city_codes.json; do
   if [[ ! -f "$STAGE/$ref" ]]; then
     echo "ERROR: SKILL.md references $ref but it is missing from the stage" >&2
     exit 1
