@@ -87,7 +87,7 @@ jobs:
 
       - name: 全量单测（发版门禁，与 CI 同款）
         if: steps.version.outputs.skip != 'true' && steps.dupcheck.outputs.skip != 'true'
-        run: uv run python -m unittest tests.test_chrome_setup tests.test_job_summary tests.test_deepseek_screen
+        run: uv run python -m unittest tests.test_chrome_setup tests.test_job_summary tests.test_deepseek_screen tests.test_offline_screen_runner
 
       # master 路径在此补打 tag（tag 路径则复用已存在的 tag，--verify-tag 校验）
       - name: Create tag (master path)

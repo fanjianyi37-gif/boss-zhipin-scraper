@@ -166,6 +166,8 @@ python3 "$SUMMARY_PATH" \
 
 没有偏好就不要编造城市或方向。接口失败时命令仍打印原来的摘要。`scripts/deepseek_screen.py` 必须和 `job_summary.py` 放在同一目录，否则筛选会跳过并保留摘要。
 
+`pilot/offline_screen/` 是离线试验包。不要加 `--live`，不要把 4 条公开 fixture 当成真实样本，也不要自行切换生产默认模型。
+
 ## 参数速查
 
 | 参数 | 默认值 | 说明 |

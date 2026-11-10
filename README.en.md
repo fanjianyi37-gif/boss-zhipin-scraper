@@ -299,6 +299,8 @@ DeepSeek bills that account separately. This repository cannot estimate any plat
 
 A daily-report script that was never pushed to this repository still has to be compared on that machine. This flag does not replace it, and it does not change production scraping or sending.
 
+The offline sample package lives in `pilot/offline_screen/`. It does not call the network unless `--live` is set, and the bundled 4 public jobs are not the real sample that has not arrived. See that directory's README. This package does not make DeepSeek the production default.
+
 After installing the package you can also use the entry command:
 
 ```bash

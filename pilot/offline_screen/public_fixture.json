@@ -1,0 +1,68 @@
+[
+  {
+    "id": "j1",
+    "company": "济让",
+    "title": "AIGC视觉设计师/AIGCer（视频方向）-Libtv",
+    "url": "https://www.zhipin.com/job_detail/8768882f88f0e1220nN83d69FVBQ.html",
+    "salary": "8-12K",
+    "location": "杭州·余杭·仓前",
+    "education": "大专",
+    "experience": "经验不限",
+    "description": "角色、场景、构图、镜头、光影与AI抽卡；作品集优先。",
+    "previously_recommended": true,
+    "detail_status": "昨日正文",
+    "flags": [
+      "正文沿用昨日，非今日重新核实",
+      "不能仅凭标题认定平台直招"
+    ]
+  },
+  {
+    "id": "j2",
+    "company": "易宝软件",
+    "title": "大模型评测专家",
+    "url": "https://www.zhipin.com/job_detail/441bde439a029c070nx829m5E1NT.html",
+    "salary": "13-18K",
+    "location": "杭州·余杭·仓前",
+    "education": "列表本科；正文硕士且本硕至少一段211",
+    "experience": null,
+    "description": "偏通用模型评测，不是视频方向。",
+    "previously_recommended": false,
+    "detail_status": "当日正文",
+    "flags": [
+      "学历要求冲突",
+      "经验要求缺失"
+    ]
+  },
+  {
+    "id": "j3",
+    "company": "法本",
+    "title": "ai数据标注（双休）",
+    "url": "https://www.zhipin.com/job_detail/3c815cf6299295e70nx92Nu0GFJW.html",
+    "salary": "8-12K",
+    "location": "杭州·余杭·仓前",
+    "education": "本科",
+    "experience": "1-3年",
+    "description": "Seedream生成图片质量评测；指令、结构、美感打分与缺陷归因。",
+    "previously_recommended": false,
+    "detail_status": "当日正文",
+    "flags": []
+  },
+  {
+    "id": "j4",
+    "company": "纬致芯创",
+    "title": "视频质检",
+    "url": null,
+    "salary": null,
+    "location": "列表滨江，正文北京",
+    "education": null,
+    "experience": null,
+    "description": "视频质检，详情明确要求北京工作。",
+    "previously_recommended": false,
+    "detail_status": "历史样本",
+    "flags": [
+      "实际工作地冲突",
+      "链接缺失",
+      "薪资缺失"
+    ]
+  }
+]
