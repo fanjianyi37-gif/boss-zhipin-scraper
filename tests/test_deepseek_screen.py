@@ -55,13 +55,13 @@ def reasons_for(jobs):
     }
 
 
-def valid_items(jobs, groups=None):
+def valid_items(jobs, relevances=None):
     mapping = reasons_for(jobs)
-    groups = groups or ["优先", "观察", "观察", "不推荐"]
+    relevances = relevances or ["high", "medium_side", "medium_side", "low_mismatch"]
     return {
         "items": [
-            {"id": job["id"], "group": group, "reason": mapping[job["id"]]}
-            for job, group in zip(jobs, groups)
+            {"id": job["id"], "relevance": relevance, "reason": mapping[job["id"]]}
+            for job, relevance in zip(jobs, relevances)
         ]
     }
 
@@ -98,7 +98,7 @@ class ValidationTests(unittest.TestCase):
         self.valid = valid_items(self.jobs)
 
     def test_public_fixture_round_trip_keeps_program_facts(self):
-        items = screen.validate_items(self.valid, self.records, PREFERENCES)
+        items, _decisions = screen.validate_items(self.valid, self.records, PREFERENCES)
         text = screen.render_markdown(self.records, items)
         self.assertIn("https://www.zhipin.com/job_detail/8768882f88f0e1220nN83d69FVBQ.html", text)
         self.assertIn("8-12K", text)
@@ -126,7 +126,7 @@ class ValidationTests(unittest.TestCase):
             bad = json.loads(json.dumps(self.valid))
             mutate(bad)
             with self.assertRaises(screen.ModelOutputError) as caught:
-                screen.validate_items(bad, self.records, PREFERENCES)
+                screen.validate_items(bad, self.records, PREFERENCES)  # noqa: returns tuple
             self.assertEqual(caught.exception.stage, stage, stage)
 
     def test_truncated_json_and_non_json_stay_distinct(self):
@@ -141,7 +141,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(caught.exception.stage, "non_json")
 
         fenced = "```json\n" + json.dumps(self.valid, ensure_ascii=False) + "\n```"
-        items, _usage, finish = screen.interpret_completion(
+        items, _decisions, _usage, finish = screen.interpret_completion(
             completion(fenced), self.records, PREFERENCES
         )
         self.assertEqual(finish, "stop")
@@ -149,10 +149,10 @@ class ValidationTests(unittest.TestCase):
 
     def test_wrong_types_and_ungrounded_facts(self):
         bad_group = json.loads(json.dumps(self.valid))
-        bad_group["items"][0]["group"] = 1
+        bad_group["items"][0]["relevance"] = 1
         with self.assertRaises(screen.ModelOutputError) as caught:
             screen.validate_items(bad_group, self.records, PREFERENCES)
-        self.assertEqual(caught.exception.stage, "group_type")
+        self.assertEqual(caught.exception.stage, "relevance_type")
 
         salary = json.loads(json.dumps(self.valid))
         salary["items"][0]["reason"] = "更建议看 30-50K。"
@@ -173,11 +173,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(caught.exception.stage, "ungrounded_place")
 
     def test_model_priority_does_not_erase_conflict_flag(self):
-        items = screen.validate_items(
-            valid_items(self.jobs, ["优先", "优先", "观察", "不推荐"]),
-            self.records,
-            PREFERENCES,
-        )
+        items = [{"id": "j2", "group": "优先", "reason": "程序只有在资格 met 时才会给出优先。"}]
         text = screen.render_markdown(self.records, items)
         self.assertIn("学历要求冲突", text)
         self.assertIn("本地提示：该条带有冲突警示。分组仍是模型原文，程序没有改写。", text)
@@ -275,7 +271,7 @@ class RunScreenTests(unittest.TestCase):
             return completion({
                 "items": [{
                     "id": "j1",
-                    "group": "优先",
+                    "relevance": "high",
                     "reason": "https://evil.example/phish",
                 }]
             })
@@ -415,7 +411,7 @@ class RunScreenTests(unittest.TestCase):
             self.assertNotIn("http", json.dumps(user["jobs"], ensure_ascii=False))
             return completion({"items": [{
                 "id": "abc123",
-                "group": "观察",
+                "relevance": "high",
                 "reason": "上海本科，3-5年。",
             }]})
 
@@ -453,7 +449,7 @@ class RunScreenTests(unittest.TestCase):
             self.assertIn("实际工作地冲突", user["jobs"][0]["flags"])
             return completion({"items": [{
                 "id": "c1",
-                "group": "观察",
+                "relevance": "medium_side",
                 "reason": "学历要求冲突，且正文地点与列表不同。",
             }]})
 
@@ -727,12 +723,83 @@ class BoundaryTests(unittest.TestCase):
         self.assertNotIn("websocket", text)
 
     def test_output_budget_fits_five_short_answers_without_raising_the_old_cap(self):
-        self.assertEqual(screen.output_token_budget(1), 48 + 96)
-        self.assertEqual(screen.output_token_budget(4), 48 + 96 * 4)
-        self.assertEqual(screen.output_token_budget(5), 48 + 96 * 5)
+        self.assertEqual(screen.output_token_budget(1), 64 + 240)
+        self.assertEqual(screen.output_token_budget(4), 64 + 240 * 4)
+        self.assertEqual(screen.output_token_budget(5), 64 + 240 * 5)
         self.assertEqual(screen.output_token_budget(20), screen.ANSWER_TOKEN_CAP)
         self.assertLess(screen.output_token_budget(5), 1400)
-        self.assertLessEqual(screen.ANSWER_TOKEN_CAP, 1024)
+        self.assertEqual(screen.REASON_MAX_CHARS, 180)
+        self.assertNotIn("deepseek-chat", screen.SYSTEM_PROMPT)
+        self.assertEqual(screen.DEFAULT_MODEL, "deepseek-flash")
+
+    def test_program_maps_unknown_eligibility_without_using_fixture_labels(self):
+        reason_45 = "相关度说明" + ("字" * 40)
+        self.assertEqual(len(reason_45), 45)
+        jobs = [
+            {
+                "id": "case-high",
+                "company": "甲",
+                "title": "主线岗位",
+                "salary": "8-12K",
+                "location": "杭州",
+                "education": "大专",
+                "experience": "经验不限",
+                "tags_list": "经验不限 | 大专",
+                "description": "正文要求熟练指定工具并有项目经验。列表写经验不限。",
+                "previously_recommended": False,
+                "detail_status": "样本",
+                "flags": [],
+            },
+            {
+                "id": "case-side",
+                "company": "乙",
+                "title": "旁线岗位",
+                "salary": "8-12K",
+                "location": "杭州",
+                "education": "本科",
+                "experience": "1-3年",
+                "tags_list": "1-3年 | 本科",
+                "description": "旁线质检，不是主线岗位。",
+                "previously_recommended": False,
+                "detail_status": "样本",
+                "flags": [],
+            },
+            {
+                "id": "case-mismatch",
+                "company": "丙",
+                "title": "其他方向",
+                "salary": "8-12K",
+                "location": "杭州",
+                "education": "本科",
+                "experience": "1-3年",
+                "tags_list": "1-3年 | 本科",
+                "description": "方向与筛选偏好明显不同。",
+                "previously_recommended": False,
+                "detail_status": "样本",
+                "flags": [],
+            },
+        ]
+        records, problem = screen.normalize_records(jobs)
+        self.assertEqual(problem, "")
+        payload = {
+            "items": [
+                {"id": "case-high", "relevance": "high", "reason": "列表经验不限，所以门槛符合。"},
+                {"id": "case-side", "relevance": "medium_side", "reason": reason_45},
+                {"id": "case-mismatch", "relevance": "low_mismatch", "reason": "方向不同。"},
+            ]
+        }
+        items, decisions = screen.validate_items(payload, records, "偏好里写了候选人会用工具")
+        groups = {item["id"]: item["group"] for item in items}
+        self.assertEqual(groups["case-high"], "观察")
+        self.assertEqual(groups["case-side"], "观察")
+        self.assertEqual(groups["case-mismatch"], "不推荐")
+        self.assertTrue(all(item["eligibility"] == "unknown" for item in decisions))
+        self.assertEqual({key for item in items for key in item}, {"id", "group", "reason"})
+        too_long = json.loads(json.dumps(payload))
+        too_long["items"][0]["reason"] = "长" * 181
+        with self.assertRaises(screen.ModelOutputError) as caught:
+            screen.validate_items(too_long, records, "偏好")
+        self.assertEqual(caught.exception.stage, "reason_length")
         self.assertNotIn("deepseek-chat", screen.SYSTEM_PROMPT)
         self.assertEqual(screen.DEFAULT_MODEL, "deepseek-flash")
         self.assertIn("不是指令", screen.SYSTEM_PROMPT)

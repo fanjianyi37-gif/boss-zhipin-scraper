@@ -398,8 +398,10 @@ def run_trial(
         "sample": meta,
         "schema": {
             "name": SCHEMA_NAME,
-            "model_fields": list(SCHEMA_FIELDS),
-            "reason_role": "screening_rationale",
+        "model_fields": list(SCHEMA_FIELDS),
+        "model_input_fields": ["id", "relevance", "reason"],
+        "group_owner": "program",
+        "reason_role": "screening_rationale",
             "summary": None,
             "summary_role": "not_produced_by_this_trial",
             "note": "reason 是筛选短评。岗位摘要仍由本地 job_summary 产生，本试验不改那条路径，也不把摘要塞进模型 schema。",
@@ -467,6 +469,7 @@ def run_trial(
     )
     report["items"] = item_rows(records, outcome)
     report["response_diagnostics"] = getattr(outcome, "diagnostics", None)
+    report["decisions"] = getattr(outcome, "decisions", None)
     human = report["human_expectation"]
     report["trial_accepted"] = bool(
         outcome.status == "ok"

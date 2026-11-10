@@ -62,11 +62,11 @@ def valid_content(jobs):
         "j3": "仓前，正文是图片质量评测。",
         "j4": "正文要求北京，与滨江冲突。",
     }
-    groups = ["优先", "观察", "观察", "不推荐"]
+    relevances = ["low_mismatch", "high", "medium_side", "medium_side"]
     return json.dumps({
         "items": [
-            {"id": job["id"], "group": group, "reason": reasons[job["id"]]}
-            for job, group in zip(jobs, groups)
+            {"id": job["id"], "relevance": relevance, "reason": reasons[job["id"]]}
+            for job, relevance in zip(jobs, relevances)
         ]
     }, ensure_ascii=False)
 
@@ -226,7 +226,7 @@ class OneRequestTests(_NetworkGuard):
             self.assertEqual(body["model"], "deepseek-flash")
             self.assertIs(body["stream"], False)
             self.assertEqual(body["thinking"], {"type": "disabled"})
-            self.assertEqual(body["max_tokens"], 48 + 96 * 4)
+            self.assertEqual(body["max_tokens"], 64 + 240 * 4)
             self.assertLess(body["max_tokens"], 1400)
             self.assertNotIn("response_format", body)
             return completion("not json")
@@ -380,7 +380,7 @@ class TruncationDiagnosticTests(_NetworkGuard):
         jobs, meta, _expectations, _preference = load_public_jobs()
         secret = "sk-liveSECRETvalue"
         calls = {"n": 0}
-        budget = 48 + 96 * len(jobs)
+        budget = 64 + 240 * len(jobs)
 
         def inner(body, timeout):
             calls["n"] += 1
@@ -391,7 +391,7 @@ class TruncationDiagnosticTests(_NetworkGuard):
                     "finish_reason": "length",
                     "message": {
                         "role": "assistant",
-                        "content": "Bearer " + secret + " {\"items\":[",
+                        "content": ("可见输出" * 130) + " Bearer " + secret,
                         "reasoning_content": ("思考" * 3000) + secret,
                     },
                 }],
@@ -427,7 +427,10 @@ class TruncationDiagnosticTests(_NetworkGuard):
         self.assertEqual(diag["max_tokens"], budget)
         self.assertTrue(diag["reasoning_present"])
         self.assertGreater(diag["reasoning_chars"], 400)
-        self.assertLessEqual(len(diag["content_excerpt"]), 400)
+        self.assertGreater(diag["content_chars"], 400)
+        self.assertEqual(len(diag["content_excerpt"]), diag["content_chars"] - len(secret) - len("Bearer ") + len("[redacted]"))
+        self.assertGreater(len(diag["content_excerpt"]), 400)
+        self.assertLessEqual(len(diag["content_excerpt"]), 8000)
         self.assertIn("[redacted]", diag["content_excerpt"])
         self.assertNotIn(secret, json.dumps(report, ensure_ascii=False))
         self.assertNotIn("思考思考", json.dumps(diag, ensure_ascii=False))
@@ -530,7 +533,9 @@ class AdapterReuseTests(unittest.TestCase):
         records, problem = adapter.normalize_records(jobs)
         self.assertEqual(problem, "")
         valid = json.loads(valid_content(jobs))
-        self.assertEqual(len(adapter.validate_items(valid, records, "测试偏好")), 4)
+        items, decisions = adapter.validate_items(valid, records, "测试偏好")
+        self.assertEqual(len(items), 4)
+        self.assertTrue(all(row["eligibility"] == "unknown" for row in decisions))
         broken = json.loads(valid_content(jobs))
         broken["items"][0]["reason"] = "https://invented.invalid/job"
         with self.assertRaises(adapter.ModelOutputError) as caught:

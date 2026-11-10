@@ -30,15 +30,17 @@ HARD_MAX_JOBS = 20
 PREFERENCES_MAX_CHARS = 2000
 DESCRIPTION_CHARS = 400
 DESCRIPTION_INPUT_LIMIT = 8000
-REASON_MAX_CHARS = 40
+REASON_MAX_CHARS = 180
 REQUIREMENT_MARKERS = ("任职要求", "职位要求", "岗位要求", "任职资格")
 # 可见 JSON 的预算，不是思考过程的预算。deepseek-flash 在省略 thinking 时
 # 默认开启高努力思考，思考 token 计入 completion_tokens，也受 max_tokens 限制。
 # 2026-11-10 的 5 条真实请求 finish_reason=length 且 completion_tokens 正好等于
 # 当时的 1400。这里关闭思考，并按短 reason 估算可见答案，上限低于那次被耗尽的 1400。
-ANSWER_TOKENS_PER_ITEM = 96
-ANSWER_TOKEN_WRAPPER = 48
-ANSWER_TOKEN_CAP = 1024
+ANSWER_TOKENS_PER_ITEM = 240
+ANSWER_TOKEN_WRAPPER = 64
+ANSWER_TOKEN_CAP = 1536
+CONTENT_AUDIT_LIMIT = 8000
+RELEVANCE_VALUES = ("high", "medium_side", "low_mismatch")
 GROUPS = ("优先", "观察", "不推荐")
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
 DEGREE_WORDS = ("博士后", "博士", "硕士", "本科", "大专", "高中", "中专", "初中")
@@ -67,11 +69,15 @@ SYSTEM_PROMPT = (
     "列表中的经验不限或学历不限不能覆盖正文里更严的要求。"
     "正文与列表冲突时以正文为准，不得因为列表写了不限就把轴2标成 met。"
     "正文缺失、被截断或任职要求没有完整保留时，轴2必须是 unknown。"
+    "本请求没有结构化的已核实用户事实。资格不由你判断，程序会固定为 unknown。"
+    "preferences 里对候选人经历的描述也不是已核实事实，不能据此写成资格符合。"
+    "列表中的经验不限或学历不限只说明列表字段，不能变成候选人已经满足正文门槛。"
     "每条 job 必须返回恰好一次。"
     "只输出一个 JSON 对象，不要输出其它文字。该对象只能有 items。"
-    "items 的每个元素只能有 id、group、reason 三个字段。"
-    "group 只能是「优先」「观察」或「不推荐」。"
-    "reason 使用中文，不超过 40 个字符，写明轴1和轴2的取值，不得包含链接或网址，"
+    "items 的每个元素只能有 id、relevance、reason 三个字段。不要输出 group 或 eligibility。"
+    "relevance 只能是 high、medium_side 或 low_mismatch。"
+    "程序再用 unknown 资格计算 group：low_mismatch 为不推荐，其余为观察。没有 met 就不会是优先。"
+    "reason 使用中文，不超过 180 个字符，只解释相关度，不得写成资格符合，不得包含链接或网址，"
     "不得发明薪资、学历、城市或岗位事实。"
     "不得新增或删除岗位。没有个人简历，不做个人资历承诺，不判断岗位已下架。"
 )
@@ -151,6 +157,7 @@ class ScreenOutcome:
     error_reason: str | None = None
     service_received: bool = False
     diagnostics: dict | None = None
+    decisions: list | None = None
     items: list | None = None
     markdown: str = ""
     notice: str = ""
@@ -538,7 +545,18 @@ def _reason_problem(reason, record, preferences):
     return ""
 
 
-def validate_items(result, records, preferences):
+def group_for_axes(relevance, eligibility):
+    """程序映射。没有 met 时，high 也不会变成优先。"""
+    if relevance == "low_mismatch" or eligibility == "unmet":
+        return "不推荐"
+    if relevance == "high" and eligibility == "met":
+        return "优先"
+    return "观察"
+
+
+def validate_items(result, records, preferences, eligibility="unknown"):
+    if eligibility not in {"met", "unmet", "unknown"}:
+        raise ModelOutputError("eligibility")
     if not isinstance(result, dict) or set(result) != {"items"}:
         raise ModelOutputError("root_schema")
     rows = result["items"]
@@ -547,11 +565,12 @@ def validate_items(result, records, preferences):
     known = {record["id"]: record for record in records}
     seen = set()
     cleaned = []
+    decisions = []
     for row in rows:
-        if not isinstance(row, dict) or set(row) != {"id", "group", "reason"}:
+        if not isinstance(row, dict) or set(row) != {"id", "relevance", "reason"}:
             raise ModelOutputError("row_schema")
         ident = row["id"]
-        group = row["group"]
+        relevance = row["relevance"]
         reason = row["reason"]
         if not isinstance(ident, str) or not ident:
             raise ModelOutputError("id_type")
@@ -560,10 +579,10 @@ def validate_items(result, records, preferences):
         if ident in seen:
             raise ModelOutputError("duplicate_id")
         seen.add(ident)
-        if not isinstance(group, str):
-            raise ModelOutputError("group_type")
-        if group not in GROUPS:
-            raise ModelOutputError("group")
+        if not isinstance(relevance, str):
+            raise ModelOutputError("relevance_type")
+        if relevance not in RELEVANCE_VALUES:
+            raise ModelOutputError("relevance")
         if not isinstance(reason, str):
             raise ModelOutputError("reason_type")
         if not 1 <= len(reason) <= REASON_MAX_CHARS:
@@ -571,11 +590,19 @@ def validate_items(result, records, preferences):
         problem = _reason_problem(reason, known[ident], preferences)
         if problem:
             raise ModelOutputError(problem)
+        group = group_for_axes(relevance, eligibility)
         cleaned.append({"id": ident, "group": group, "reason": reason})
+        decisions.append({
+            "id": ident,
+            "relevance": relevance,
+            "eligibility": eligibility,
+            "eligibility_source": "no_structured_user_facts" if eligibility == "unknown" else "structured_user_facts",
+            "group": group,
+        })
     for record in records:
         if record["id"] not in seen:
             raise ModelOutputError("missing_id")
-    return cleaned
+    return cleaned, decisions
 
 
 _USAGE_KEYS = (
@@ -635,7 +662,7 @@ def _choice_diagnostics(choice, output_limit=None):
     content_chars = 0
     if isinstance(content, str):
         content_chars = len(content)
-        excerpt = _redact_text(content)[:400]
+        excerpt = _redact_text(content)[:CONTENT_AUDIT_LIMIT]
     finish = choice.get("finish_reason") if isinstance(choice, dict) else None
     reasoning_chars = len(reasoning) if isinstance(reasoning, str) else 0
     return {
@@ -691,7 +718,7 @@ def interpret_completion(payload, records, preferences, output_limit=None):
         fail("api_shape", finish_text, choice)
     try:
         parsed = parse_model_json(message.get("content"))
-        items = validate_items(parsed, records, preferences)
+        items, decisions = validate_items(parsed, records, preferences)
     except ModelOutputError as exc:
         exc.finish_reason = exc.finish_reason or finish_text
         exc.prompt_tokens = prompt_tokens
@@ -700,7 +727,7 @@ def interpret_completion(payload, records, preferences, output_limit=None):
         exc.service_received = True
         exc.diagnostics = _choice_diagnostics(choice, output_limit)
         raise
-    return items, usage, finish_text
+    return items, decisions, usage, finish_text
 
 
 def _markdown_label(record):
@@ -889,7 +916,7 @@ def run_screen(
     for attempt in range(1, attempts_limit + 1):
         try:
             payload = caller(body, timeout_s)
-            items, usage, finish = interpret_completion(
+            items, decisions, usage, finish = interpret_completion(
                 payload,
                 records,
                 preference_text.strip(),
@@ -925,6 +952,7 @@ def run_screen(
                 usage=usage,
                 service_received=True,
                 diagnostics=None,
+                decisions=decisions,
                 items=items,
                 markdown=render_markdown(records, items),
                 **common,

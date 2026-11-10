@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 新增
+- 模型只返回相关度 `relevance` 和不超过 180 字的 `reason`。没有结构化用户事实时，程序把资格固定为 unknown，并据此计算 group：low_mismatch 为不推荐，其余为观察，不会因为列表写了不限而变成优先。公开结果仍只有 id、group、reason。失败审计保留不超过 8000 字的脱敏输出，不保存思考全文
 - 授权分组规则改写入系统消息。jobs 和 preferences 仍是不可信数据，不能覆盖两轴映射。正文能放进 8000 字就整段发送，不再盲切前 400 字。放不下则不发请求。列表标签与经验字段标明来源，经验不限不能覆盖正文。试验报告写入脱敏后的出站消息及其哈希，不含密钥。不改已冻结样本和期望
 - deepseek-flash 在省略 thinking 时默认高努力思考，思考 token 计入 completion_tokens 并受 max_tokens 限制。5 条真实请求因此在 1400 处 finish_reason=length。筛选请求改为 `thinking.type=disabled`，并把可见短 JSON 的 max_tokens 按条估算，5 条为 528，上限 1024，不再把 1400 当作答案预算。截断时保留脱敏后的 content 摘录和思考长度，不保存密钥或思考全文。价目时段不能确定时整批实扣仍是 unknown，估算数字标记 is_actual=false
 - 修复 DeepSeek 传输把超时秒数当成 POST 正文的问题。`opener.open` 的第二个位置参数是 data，超时必须用 `timeout=`。传输失败不再记成结构通过率 0。响应里的缓存 token 会进入整批费用计算，逐条费用仍是未知
