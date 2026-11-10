@@ -21,6 +21,8 @@
 
 传输使用 `opener.open(request, timeout=超时秒数)`。`urllib` 的第二个位置参数是正文 data，不是超时。旧包把秒数当成 POST 正文，会在模型输出前抛出 `TypeError`。这份包已改掉。传输失败时结构通过率是 null，不是 0。只有服务真的返回了模型输出且校验失败，通过率才是 0。报告分开记录是否已尝试发送，以及服务是否返回了 HTTP 响应，并保留不含密钥的错误类型和短原因。
 
+官方文档写明，省略 `thinking` 时 deepseek-flash 默认开启思考，默认努力为 high。思考和最终答案共用 `max_tokens`。2026-11-10 的 5 条真实请求 `finish_reason=length`，`completion_tokens` 正好是当时的 1400。这次请求显式发送 `thinking.type=disabled`。`reason` 最多 40 个字符。5 条的 `max_tokens` 是 528，20 条封顶 1024。这不是把 1400 调大。截断时报告保留最多 400 字的脱敏 content 摘录，以及思考文本的长度，不保存思考全文。
+
 本云端账号不能把 secret 转发进来。不要把密钥贴进聊天、写进文件，或从 Actions、仓库 secret、本机凭证里找。没有安全获准的执行环境时，就停在离线包。
 
 ## 离线运行

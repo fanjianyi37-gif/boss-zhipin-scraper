@@ -243,10 +243,12 @@ class RunScreenTests(unittest.TestCase):
 
         outcome = self._run(transport, timeout=1, max_attempts=9)
         body = seen["body"]
-        self.assertEqual(set(body), {"model", "messages", "max_tokens", "stream"})
+        self.assertEqual(set(body), {"model", "messages", "max_tokens", "stream", "thinking"})
         self.assertEqual(body["model"], "deepseek-flash")
         self.assertIs(body["stream"], False)
-        self.assertEqual(body["max_tokens"], 1400)
+        self.assertEqual(body["thinking"], {"type": "disabled"})
+        self.assertEqual(body["max_tokens"], screen.output_token_budget(4))
+        self.assertLess(body["max_tokens"], 1400)
         self.assertEqual(seen["timeout"], 5)
         self.assertEqual([item["role"] for item in body["messages"]], ["system", "user"])
         self.assertNotIn("杭州", body["messages"][0]["content"])
@@ -647,7 +649,7 @@ class SummaryIntegrationTests(unittest.TestCase):
             def fake_open(request, timeout):
                 body = json.loads(request.data.decode())
                 self.assertEqual(body["model"], "deepseek-flash")
-                self.assertNotIn("thinking", body)
+                self.assertEqual(body["thinking"], {"type": "disabled"})
                 self.assertNotIn("response_format", body)
 
                 class Response:
@@ -724,11 +726,13 @@ class BoundaryTests(unittest.TestCase):
         self.assertNotIn("flush_jobs", text)
         self.assertNotIn("websocket", text)
 
-    def test_output_budget_matches_the_four_item_pilot_without_raising_the_cap(self):
-        self.assertEqual(screen.output_token_budget(1), 1400)
-        self.assertEqual(screen.output_token_budget(4), 1400)
-        self.assertEqual(screen.output_token_budget(20), screen.MAX_OUTPUT_TOKENS)
-        self.assertLessEqual(screen.MAX_OUTPUT_TOKENS, 2048)
+    def test_output_budget_fits_five_short_answers_without_raising_the_old_cap(self):
+        self.assertEqual(screen.output_token_budget(1), 48 + 96)
+        self.assertEqual(screen.output_token_budget(4), 48 + 96 * 4)
+        self.assertEqual(screen.output_token_budget(5), 48 + 96 * 5)
+        self.assertEqual(screen.output_token_budget(20), screen.ANSWER_TOKEN_CAP)
+        self.assertLess(screen.output_token_budget(5), 1400)
+        self.assertLessEqual(screen.ANSWER_TOKEN_CAP, 1024)
         self.assertNotIn("deepseek-chat", screen.SYSTEM_PROMPT)
         self.assertEqual(screen.DEFAULT_MODEL, "deepseek-flash")
 

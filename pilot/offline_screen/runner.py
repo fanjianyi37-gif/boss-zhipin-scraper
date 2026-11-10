@@ -423,6 +423,7 @@ def run_trial(
         records, outcome.items, expectations, adapter
     )
     report["items"] = item_rows(records, outcome)
+    report["response_diagnostics"] = getattr(outcome, "diagnostics", None)
     human = report["human_expectation"]
     report["trial_accepted"] = bool(
         outcome.status == "ok"

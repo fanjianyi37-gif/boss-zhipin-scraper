@@ -216,7 +216,9 @@ class OneRequestTests(_NetworkGuard):
             calls["n"] += 1
             self.assertEqual(body["model"], "deepseek-flash")
             self.assertIs(body["stream"], False)
-            self.assertNotIn("thinking", body)
+            self.assertEqual(body["thinking"], {"type": "disabled"})
+            self.assertEqual(body["max_tokens"], 48 + 96 * 4)
+            self.assertLess(body["max_tokens"], 1400)
             self.assertNotIn("response_format", body)
             return completion("not json")
 
@@ -335,9 +337,10 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(report["per_item_measured_cost"], "unknown")
         self.assertEqual(report["batch_measured_cost"], "0.00300000")
         self.assertEqual(report["amortized_estimate"]["label"], "estimate_not_measurement")
+        self.assertFalse(report["amortized_estimate"]["is_actual"])
         self.assertEqual(report["amortized_estimate"]["denominator_jobs"], 4)
         self.assertEqual(
-            Decimal(report["amortized_estimate"]["amortized_per_item_usd"]),
+            Decimal(report["amortized_estimate"]["estimated_amortized_per_item_usd"]),
             Decimal("0.00075000"),
         )
 
@@ -355,8 +358,73 @@ class PricingTests(unittest.TestCase):
         )
         self.assertEqual(report["batch_measured_cost"], "unknown")
         self.assertEqual(report["amortized_estimate"]["label"], "estimate_not_measurement")
-        self.assertEqual(report["amortized_estimate"]["off_peak"]["batch_usd"], "0.15000000")
-        self.assertEqual(report["amortized_estimate"]["peak"]["batch_usd"], "0.30000000")
+        self.assertFalse(report["amortized_estimate"]["off_peak"]["is_actual"])
+        self.assertFalse(report["amortized_estimate"]["peak"]["is_actual"])
+        self.assertEqual(report["amortized_estimate"]["off_peak"]["estimated_batch_usd"], "0.15000000")
+        self.assertEqual(report["amortized_estimate"]["peak"]["estimated_batch_usd"], "0.30000000")
+        self.assertEqual(report["actual_invoice"], "unknown")
+        self.assertEqual(report["per_item_measured_cost"], "unknown")
+
+
+class TruncationDiagnosticTests(_NetworkGuard):
+    def test_length_cap_keeps_sanitized_excerpt_and_does_not_score(self):
+        jobs, meta, _expectations, _preference = load_public_jobs()
+        secret = "sk-liveSECRETvalue"
+        calls = {"n": 0}
+        budget = 48 + 96 * len(jobs)
+
+        def inner(body, timeout):
+            calls["n"] += 1
+            self.assertEqual(body["thinking"], {"type": "disabled"})
+            self.assertEqual(body["max_tokens"], budget)
+            return {
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {
+                        "role": "assistant",
+                        "content": "Bearer " + secret + " {\"items\":[",
+                        "reasoning_content": ("思考" * 3000) + secret,
+                    },
+                }],
+                "usage": {
+                    "prompt_tokens": 20,
+                    "completion_tokens": budget,
+                    "total_tokens": 20 + budget,
+                    "prompt_cache_hit_tokens": 0,
+                    "prompt_cache_miss_tokens": 20,
+                    "completion_tokens_details": {"reasoning_tokens": budget - 10},
+                },
+            }
+
+        report = runner.run_trial(
+            HERE,
+            jobs,
+            sample=meta,
+            expectations=frozen_expectations([job["id"] for job in jobs]),
+            preference=frozen_preference(),
+            live=True,
+            transport=inner,
+        )
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(report["http"]["stage"], "truncated")
+        self.assertEqual(report["http"]["finish_reason"], "length")
+        self.assertTrue(report["http"]["service_received"])
+        self.assertEqual(report["structural"]["rate"], 0)
+        self.assertEqual(report["structural"]["passed_items"], 0)
+        self.assertEqual(report["human_expectation"]["status"], "not_scored")
+        self.assertFalse(report["trial_accepted"])
+        diag = report["response_diagnostics"]
+        self.assertTrue(diag["completion_tokens_hit_cap"])
+        self.assertEqual(diag["max_tokens"], budget)
+        self.assertTrue(diag["reasoning_present"])
+        self.assertGreater(diag["reasoning_chars"], 400)
+        self.assertLessEqual(len(diag["content_excerpt"]), 400)
+        self.assertIn("[redacted]", diag["content_excerpt"])
+        self.assertNotIn(secret, json.dumps(report, ensure_ascii=False))
+        self.assertNotIn("思考思考", json.dumps(diag, ensure_ascii=False))
+        self.assertEqual(report["usage"]["reasoning_tokens"], budget - 10)
+        self.assertEqual(report["cost"]["actual_invoice"], "unknown")
+        self.assertEqual(report["cost"]["per_item_measured_cost"], "unknown")
 
 
 class ProductionTransportTests(_NetworkGuard):
@@ -434,7 +502,9 @@ class ProductionTransportTests(_NetworkGuard):
         self.assertTrue(report["http"]["service_received"])
         self.assertEqual(report["structural"]["rate"], 1)
         self.assertEqual(report["cost"]["per_item_measured_cost"], "unknown")
+        self.assertEqual(report["cost"]["actual_invoice"], "unknown")
         self.assertEqual(report["cost"]["batch_measured_cost"], "0.00300000")
+        self.assertFalse(report["cost"]["amortized_estimate"]["is_actual"])
         self.assertEqual(report["cost"]["amortized_estimate"]["label"], "estimate_not_measurement")
         self.assertEqual(report["usage"]["prompt_cache_hit_tokens"], 1000000)
 

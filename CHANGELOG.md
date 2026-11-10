@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 新增
+- deepseek-flash 在省略 thinking 时默认高努力思考，思考 token 计入 completion_tokens 并受 max_tokens 限制。5 条真实请求因此在 1400 处 finish_reason=length。筛选请求改为 `thinking.type=disabled`，并把可见短 JSON 的 max_tokens 按条估算，5 条为 528，上限 1024，不再把 1400 当作答案预算。截断时保留脱敏后的 content 摘录和思考长度，不保存密钥或思考全文。价目时段不能确定时整批实扣仍是 unknown，估算数字标记 is_actual=false
 - 修复 DeepSeek 传输把超时秒数当成 POST 正文的问题。`opener.open` 的第二个位置参数是 data，超时必须用 `timeout=`。传输失败不再记成结构通过率 0。响应里的缓存 token 会进入整批费用计算，逐条费用仍是未知
 - 离线筛选试验包 `pilot/offline_screen/`：复用既有校验，默认不联网。显式 `--live` 且偏好和人工期望都已冻结时，最多一次 `deepseek-flash` 的 `/chat/completions` 请求，自动重试为 0。公开 4 条 fixture 不代表尚未到达的真实样本。`reason` 仍只是筛选短评，不改成摘要 schema
 - 可选 DeepSeek 文本筛选：`scripts/deepseek_screen.py`，由 `scripts/job_summary.py --deepseek` 显式开启。默认摘要、抓取、`--analysis` 都不调用模型；本仓库原本没有分类模型，这个入口不替换既有模型。没有 `--preferences` 或 `--preferences-file` 时不请求接口，也不编造偏好。密钥只读进程环境变量 `DEEPSEEK_API_KEY`，默认模型 `deepseek-flash`。请求体只使用已核对过的 `model`、`messages`、`max_tokens`、`stream`。缺密钥、HTTP 错误、超时、非 JSON、截断、缺岗位、重复或未知 id、短评里的链接，以及短评中的薪资/学历/城市对不上本地记录时，丢弃模型输出并回退原摘要，不删除岗位。传输失败最多再试 1 次，校验失败不重试。链接、薪资、地区、学历、经验、`is_new` 和输入里已有的 `previously_recommended`、来源警示都由本地记录渲染。不写 sent 标记，不发送消息，不改采集链路。接口费用另计，不能据此估计平台额度

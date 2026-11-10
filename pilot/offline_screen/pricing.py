@@ -64,9 +64,10 @@ def _scenario(hit, miss, output_tokens, job_count, band):
         amortized = _money(batch / Decimal(job_count))
     return {
         "label": "estimate_not_measurement",
+        "is_actual": False,
         "band": band,
-        "batch_usd": _money(batch),
-        "amortized_per_item_usd": amortized,
+        "estimated_batch_usd": _money(batch),
+        "estimated_amortized_per_item_usd": amortized,
         "denominator_jobs": job_count,
     }
 
@@ -79,6 +80,7 @@ def cost_report(usage, job_count, moment=None):
         "model": PRICE_MODEL,
         "per_item_measured_cost": "unknown",
         "per_item_reason": "一次合批请求的 usage 不能拆成单条岗位的实测费用",
+        "actual_invoice": "unknown",
         "batch_measured_cost": "unknown",
         "batch_measured_reason": "",
         "amortized_estimate": None,
@@ -97,8 +99,8 @@ def cost_report(usage, job_count, moment=None):
     band = price_band(moment)
     if band == "off_peak":
         chosen = _scenario(hit, miss, output_tokens, job_count, "off_peak")
-        report["batch_measured_cost"] = chosen["batch_usd"]
-        report["batch_measured_reason"] = "按官方价目和 usage 的缓存拆分计算的整批费用"
+        report["batch_measured_cost"] = chosen["estimated_batch_usd"]
+        report["batch_measured_reason"] = "时段可从公开规则确定。这是按价目算出的数字，不是账单实扣，actual_invoice 仍为 unknown"
         report["amortized_estimate"] = chosen
         return report
     report["batch_measured_reason"] = (

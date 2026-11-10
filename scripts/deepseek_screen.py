@@ -29,12 +29,14 @@ MAX_ATTEMPTS_LIMIT = 3
 HARD_MAX_JOBS = 20
 PREFERENCES_MAX_CHARS = 2000
 DESCRIPTION_CHARS = 400
-REASON_MAX_CHARS = 180
-# 不多于 4 条时沿用先前试点的 1400。那次真实请求的失败记录把接口错误和
-# 校验错误合成了一句话，不能据此把预算调大或调小当成根因。超过 4 条才按
-# 条加预算，并停在一个很小的硬顶；顶满仍被截断则整批回退。
-PILOT_OUTPUT_TOKENS = 1400
-MAX_OUTPUT_TOKENS = 2048
+REASON_MAX_CHARS = 40
+# 可见 JSON 的预算，不是思考过程的预算。deepseek-flash 在省略 thinking 时
+# 默认开启高努力思考，思考 token 计入 completion_tokens，也受 max_tokens 限制。
+# 2026-11-10 的 5 条真实请求 finish_reason=length 且 completion_tokens 正好等于
+# 当时的 1400。这里关闭思考，并按短 reason 估算可见答案，上限低于那次被耗尽的 1400。
+ANSWER_TOKENS_PER_ITEM = 96
+ANSWER_TOKEN_WRAPPER = 48
+ANSWER_TOKEN_CAP = 1024
 GROUPS = ("优先", "观察", "不推荐")
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
 DEGREE_WORDS = ("博士后", "博士", "硕士", "本科", "大专", "高中", "中专", "初中")
@@ -56,7 +58,7 @@ SYSTEM_PROMPT = (
     "只输出一个 JSON 对象，不要输出其它文字。该对象只能有 items。"
     "items 的每个元素只能有 id、group、reason 三个字段。"
     "group 只能是「优先」「观察」或「不推荐」。"
-    "reason 使用中文，不超过 180 个字符，不得包含链接或网址，"
+    "reason 使用中文，不超过 40 个字符，不得包含链接或网址，"
     "不得发明薪资、学历、城市或岗位事实。"
     "不得新增或删除岗位。没有个人简历，不做个人资历承诺，不判断岗位已下架。"
 )
@@ -135,6 +137,7 @@ class ScreenOutcome:
     error_type: str | None = None
     error_reason: str | None = None
     service_received: bool = False
+    diagnostics: dict | None = None
     items: list | None = None
     markdown: str = ""
     notice: str = ""
@@ -164,11 +167,9 @@ class ScreenOutcome:
 
 
 def output_token_budget(job_count):
-    """返回本次补全的 max_tokens。4 条及以下固定为试点的 1400。"""
+    """可见答案的 max_tokens。思考已关闭，这个数字不给推理过程留额度。"""
     count = max(int(job_count), 1)
-    if count <= 4:
-        return PILOT_OUTPUT_TOKENS
-    return min(MAX_OUTPUT_TOKENS, 300 + 220 * count)
+    return min(ANSWER_TOKEN_CAP, ANSWER_TOKEN_WRAPPER + ANSWER_TOKENS_PER_ITEM * count)
 
 
 def _clamp_timeout(value):
@@ -433,6 +434,9 @@ def build_request(records, preferences, model):
         ],
         "max_tokens": output_token_budget(len(records)),
         "stream": False,
+        # 官方文档：省略 thinking 且省略 reasoning_effort 时，思考默认开启且努力为 high。
+        # 思考和最终答案共用 max_tokens。筛选只需要短 JSON，因此显式关闭。
+        "thinking": {"type": "disabled"},
     }
 
 
@@ -547,6 +551,11 @@ def _usage_dict(payload):
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             continue
         cleaned[key] = value
+    details = usage.get("completion_tokens_details")
+    if isinstance(details, dict):
+        reasoning_tokens = details.get("reasoning_tokens")
+        if isinstance(reasoning_tokens, int) and not isinstance(reasoning_tokens, bool) and reasoning_tokens >= 0:
+            cleaned["reasoning_tokens"] = reasoning_tokens
     return cleaned
 
 
@@ -562,16 +571,47 @@ def _public_error(exc):
     return name, text
 
 
+_SECRET_TEXT = re.compile(r"Bearer\s+\S+|sk-[A-Za-z0-9_\-]{8,}", re.IGNORECASE)
+
+
+def _redact_text(text):
+    return _SECRET_TEXT.sub("[redacted]", text)
+
+
+def _choice_diagnostics(choice, output_limit=None):
+    """失败排查用的短摘录。不保存思考全文，也不保存密钥。"""
+    message = choice.get("message") if isinstance(choice, dict) else None
+    if not isinstance(message, dict):
+        message = {}
+    content = message.get("content")
+    reasoning = message.get("reasoning_content")
+    excerpt = None
+    content_chars = 0
+    if isinstance(content, str):
+        content_chars = len(content)
+        excerpt = _redact_text(content)[:400]
+    finish = choice.get("finish_reason") if isinstance(choice, dict) else None
+    reasoning_chars = len(reasoning) if isinstance(reasoning, str) else 0
+    return {
+        "finish_reason": finish if isinstance(finish, str) else None,
+        "max_tokens": output_limit,
+        "content_excerpt": excerpt,
+        "content_chars": content_chars,
+        "reasoning_present": reasoning_chars > 0,
+        "reasoning_chars": reasoning_chars,
+    }
+
+
 def _usage_pair(payload):
     usage = _usage_dict(payload)
     return usage.get("prompt_tokens"), usage.get("completion_tokens")
 
 
-def interpret_completion(payload, records, preferences):
+def interpret_completion(payload, records, preferences, output_limit=None):
     usage = _usage_dict(payload)
     prompt_tokens, completion_tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
 
-    def fail(stage, finish_reason=None):
+    def fail(stage, finish_reason=None, choice=None):
         err = ModelOutputError(
             stage,
             finish_reason=finish_reason,
@@ -580,6 +620,14 @@ def interpret_completion(payload, records, preferences):
         )
         err.usage = usage
         err.service_received = True
+        if isinstance(choice, dict):
+            err.diagnostics = _choice_diagnostics(choice, output_limit)
+            if (
+                finish_reason == "length"
+                and isinstance(output_limit, int)
+                and completion_tokens == output_limit
+            ):
+                err.diagnostics["completion_tokens_hit_cap"] = True
         raise err
 
     if not isinstance(payload, dict):
@@ -591,10 +639,10 @@ def interpret_completion(payload, records, preferences):
     finish = choice.get("finish_reason")
     finish_text = finish if isinstance(finish, str) else None
     if finish != "stop":
-        fail("truncated", finish_text)
+        fail("truncated", finish_text, choice)
     message = choice.get("message")
     if not isinstance(message, dict):
-        fail("api_shape", finish_text)
+        fail("api_shape", finish_text, choice)
     try:
         parsed = parse_model_json(message.get("content"))
         items = validate_items(parsed, records, preferences)
@@ -604,6 +652,7 @@ def interpret_completion(payload, records, preferences):
         exc.completion_tokens = completion_tokens
         exc.usage = usage
         exc.service_received = True
+        exc.diagnostics = _choice_diagnostics(choice, output_limit)
         raise
     return items, usage, finish_text
 
@@ -786,7 +835,10 @@ def run_screen(
         try:
             payload = caller(body, timeout_s)
             items, usage, finish = interpret_completion(
-                payload, records, preference_text.strip()
+                payload,
+                records,
+                preference_text.strip(),
+                output_limit=body["max_tokens"],
             )
         except MissingKeyError as exc:
             last_error = exc
@@ -817,6 +869,7 @@ def run_screen(
                 completion_tokens=usage.get("completion_tokens"),
                 usage=usage,
                 service_received=True,
+                diagnostics=None,
                 items=items,
                 markdown=render_markdown(records, items),
                 **common,
@@ -839,6 +892,7 @@ def run_screen(
         error_type=getattr(last_error, "error_type", None),
         error_reason=getattr(last_error, "error_reason", None),
         service_received=bool(getattr(last_error, "service_received", False)),
+        diagnostics=getattr(last_error, "diagnostics", None),
         **common,
     )
 
